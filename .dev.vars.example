@@ -1,0 +1,13 @@
+# Copy to .dev.vars for local dev. In production set each with: npx wrangler secret put NAME
+UI_PASSWORD=change-me
+SESSION_SECRET=long-random-string
+REPORT_TOKEN=long-random-string
+ADMIN_TOKEN=long-random-string
+# optional: phone push via https://ntfy.sh (pick a long random topic name)
+NTFY_TOPIC=
+NTFY_SERVER=https://ntfy.sh
+# optional: link used by the "Open chat" button on alerts
+PUBLIC_URL=http://localhost:5173
+# secrets referenced from monitors.json as ${env:NAME}
+DEMO_USERNAME=
+DEMO_PASSWORD=

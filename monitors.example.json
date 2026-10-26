@@ -1,0 +1,79 @@
+{
+  "timezone": "America/Chicago",
+  "monitors": [
+    {
+      "id": "web-app",
+      "name": "Web app",
+      "type": "http",
+      "description": "Public dashboard; the API needs a login.",
+      "intervalMinutes": 60,
+      "login": {
+        "url": "https://app.example.com/api/login",
+        "body": { "username": "${env:DEMO_USERNAME}", "password": "${env:DEMO_PASSWORD}" },
+        "tokenPath": "access_token"
+      },
+      "request": { "url": "https://app.example.com/api/stats" },
+      "expect": {
+        "status": 200,
+        "maxLatencyMs": 15000,
+        "json": [{ "path": "count", "op": ">", "value": 0 }]
+      },
+      "runbook": "Hosted on a PaaS. Logs: the platform's deployment logs. The API calls an upstream service on the home network.",
+      "knownIssues": [
+        {
+          "id": "upstream-unreachable",
+          "match": "got 502.*(All connection attempts failed|ConnectError|timed out)",
+          "cause": "The app can't reach its upstream service. Usually the home router's port forward changed or the upstream host is down.",
+          "fix": "1. Check the upstream host is up.\n2. Check the router port forward still exists.\n3. Redeploy the app if its upstream URL changed."
+        },
+        {
+          "id": "app-down",
+          "match": "got (502|503|404).*(Application failed to respond|Application not found)",
+          "cause": "The hosting platform can't reach the app; it crashed or the service was removed.",
+          "fix": "1. Open the deployment logs.\n2. Redeploy.",
+          "action": {
+            "label": "Redeploy through the platform's deploy hook",
+            "url": "${env:WEB_APP_DEPLOY_HOOK}",
+            "method": "POST"
+          }
+        }
+      ]
+    },
+    {
+      "id": "nightly-job",
+      "name": "Nightly job",
+      "type": "push",
+      "description": "A cron job on a home server that reports when it finishes.",
+      "timezone": "America/Chicago",
+      "expect": [
+        { "cron": "0 22 * * 0-4", "graceMinutes": 10 },
+        { "cron": "0 23 * * 5,6", "graceMinutes": 10 }
+      ],
+      "rules": [{ "metric": "failed", "op": "==", "value": 0 }],
+      "runbook": "Runs from the scheduler on the home server. Log: ~/Library/Logs/nightly-job.log",
+      "knownIssues": [
+        {
+          "id": "did-not-run",
+          "match": "missed report",
+          "cause": "The job never reported. The server was asleep or off, or the scheduler entry was unloaded.",
+          "fix": "1. Check the server is up.\n2. Check the scheduler entry is loaded.\n3. Read the job log."
+        }
+      ]
+    },
+    {
+      "id": "disk-health",
+      "name": "Archive disk",
+      "type": "push",
+      "description": "SMART attributes reported nightly by a home server.",
+      "timezone": "America/Chicago",
+      "expect": [{ "cron": "15 3 * * *", "graceMinutes": 60 }],
+      "rules": [
+        { "metric": "health", "op": "==", "value": "PASSED" },
+        { "metric": "smart.5", "op": "==", "value": 0 },
+        { "metric": "smart.187", "op": "==", "value": 0 },
+        { "metric": "smart.181", "op": "max_rate", "value": 2, "per": "smart.9" }
+      ],
+      "runbook": "External USB SSD. Only read SMART when the disk is idle."
+    }
+  ]
+}
