@@ -31,7 +31,7 @@ Built on Cloudflare Agents, Durable Objects, Workflows and Workers AI (Llama 3.3
  browser (chat + status board) ──wss──┐
                                       ▼
  local services ──POST /api/report──► Worker ──► HealthAgent (Durable Object, SQLite)
- (curl after each run)                 │           │  every minute: due probes, missed reports
+ (curl after each run)                 │           │  every tick: due probes, missed reports  
                                        │           │  chat: Llama 3.3 + tools
  owner ──PUT /api/config──────────────┘           ▼
                                              TriageWorkflow
@@ -111,6 +111,21 @@ AGENT_URL=https://cf-ai-home-agent.<your-subdomain>.workers.dev ADMIN_TOKEN=... 
 
 For phone alerts, install the ntfy app and subscribe to your `NTFY_TOPIC`. Pick a long random topic name, because the topic is the only credential.
 
+## Deployment status
+
+The production deployment is **paused**. It was deployed and verified (tests 4–9, 12, 19, 25 and 26 ran against it), then paused, since the owner doesn't plan to run it day to day. Workers have no pause switch, so it was done in two reversible steps:
+
+1. **Probes stopped.** An empty monitor list was uploaded (`{"monitors": []}` via `npm run push-config`). The agent watches nothing, so it makes no outbound checks and sends no alerts. Its 10-minute tick still wakes up and finds nothing to do.
+2. **URL taken offline.** The Worker's workers.dev route was disabled through the Cloudflare API:
+   ```sh
+   curl -X POST "https://api.cloudflare.com/client/v4/accounts/$ACCOUNT_ID/workers/scripts/cf-ai-home-agent/subdomain" \
+     -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+     --data '{"enabled":false}'
+   ```
+   The site and API now return Cloudflare's 404. `wrangler deploy` turns the route back on by default, so run this again after any deploy you want to stay paused.
+
+Nothing was deleted: the code, secrets, Durable Object storage (history, incidents, chat) and Workflow stay in the account, at no cost on the free plan. To resume, send the same call with `{"enabled":true}`, then upload the real `monitors.json` with `push-config`. To remove it for good, run `npx wrangler delete`.
+
 ## Security
 
 - **Transport.** HTTPS only: plain http gets a 301 to https, and HSTS is set. The chat runs over `wss://`.
@@ -161,7 +176,8 @@ Built in one session with Claude Code. Every prompt is in [PROMPTS.md](PROMPTS.m
 3. **Generic monitor model** (`src/config.ts`). Monitors are data validated with zod. There are two types: `http`, where the agent probes, and `push`, where the service reports. The two kinds of failure needed different handling. A dashboard can be probed from the internet; a job on a home network can't be reached, and shouldn't be. That's why push monitors are judged on silence (cron deadlines and maximum gaps) as well as on their reported metrics.
 4. **Agent** (`src/server.ts`).
    - `HealthAgent` extends `AIChatAgent`, so monitoring and chat share one Durable Object and one SQLite database.
-   - It runs `scheduleEvery(60)`. Each minute it runs any probe that's due and checks report deadlines.
+   - It runs `scheduleEvery(TICK_SECONDS)`. Each tick runs any probe that's due and checks report deadlines. Changing the interval cancels the old schedule on startup, because `scheduleEvery` treats a new interval as a separate schedule.
+   - **Tick interval: 10 minutes in this build, 1 minute in real production.** The tick started at 60 seconds and was changed to 600 (`TICK_SECONDS` in `src/server.ts`) for efficiency, since this deployment is a demo and is paused (see [Deployment status](#deployment-status)). In real production it would be every minute (`TICK_SECONDS = 60`), so a missed report is caught within about a minute of its grace period ending instead of up to 10. Hourly probes behave the same either way; each tick only runs probes that are due.
    - Report deadlines are evaluated with a small timezone-aware cron matcher (`src/cron.ts`). Each scheduled run is judged once, and runs from before a monitor existed are ignored.
    - Rules (`src/checks.ts`) compare a report with the previous one for "no increase" and "rate per hour, or per another metric".
 5. **Triage** (`src/workflow.ts`). Failures start `TriageWorkflow` rather than alerting inline, which gives retries, sleeps and durability for free.
@@ -180,6 +196,7 @@ Built in one session with Claude Code. Every prompt is in [PROMPTS.md](PROMPTS.m
     - `wrangler deploy`, then `push-config`.
 11. **Security audit.** A review of the working build found 8 issues, all fixed and redeployed. See [Security audit](#security-audit).
 12. **Browser test.** Headless Chrome, driven over the DevTools protocol with no extra packages, exercised the real UI. It caught two bugs the API tests missed: doubled tokens and raw HTML rendering. Both are fixed (see the table below).
+13. **Paused the deployment.** This is a demo the owner doesn't plan to run day to day, so production was paused through the Cloudflare API (see [Deployment status](#deployment-status)), and the tick was changed from 1 minute to 10 for efficiency.
 
 ### Problems found in testing, and the fixes
 
@@ -188,6 +205,7 @@ Built in one session with Claude Code. Every prompt is in [PROMPTS.md](PROMPTS.m
 | Llama renamed a test monitor after a similar one's description in the incident title | The title is always the configured monitor name; the model only writes the problem phrase |
 | Llama answered "nothing is broken" while `get_status` showed a failing service | `get_status` returns a digested answer (headline, broken services with cause and fix, healthy names), and the headline is also in the system prompt |
 | Llama offered to "run the fix" for an incident with no automatic fix | `run_fix` is only exposed while a fixable incident is open, and the prompt says so |
+| Changing the tick interval (1 minute → 10) left the old schedule running beside the new one (`scheduleEvery` dedupes on callback plus interval) | On startup, cancel any `tick` schedule whose interval isn't the current one |
 | Removing a monitor left its incident open forever | Config updates quietly resolve incidents of removed monitors |
 | A newly deployed push monitor alerts once its first report is due, even if the reporter isn't installed yet | Add push monitors to the config only after their reporter is installed |
 | Every word in the chat appeared twice ("Nothing Nothing is is broken broken"). Llama 3.3's stream events carry each token as both `response` and `choices[0].delta.content`, and `workers-ai-provider` (3.x and 4.x) emits both | `src/ai-binding.ts` wraps the AI binding and drops `response` from an event only when it equals the delta |

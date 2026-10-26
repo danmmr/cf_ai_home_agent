@@ -41,6 +41,10 @@ const RETENTION_DAYS = 30;
 // a triage stuck longer than this (workflow crashed) no longer blocks a new one
 const TRIAGE_TIMEOUT_MS = 30 * 60_000;
 const MAX_REPORT_BYTES = 64 * 1024;
+// how often the agent wakes to run due probes and check report deadlines;
+// 10 minutes for this paused demo, 60 for real use (catches missed reports
+// within a minute of their grace period)
+const TICK_SECONDS = 600;
 
 type Status = "ok" | "failing" | "unknown";
 
@@ -146,7 +150,18 @@ export class HealthAgent extends AIChatAgent<Env, AgentState> {
       summary TEXT NOT NULL, cause TEXT NOT NULL, fix TEXT NOT NULL,
       detail TEXT NOT NULL, known_issue TEXT, can_fix INTEGER NOT NULL DEFAULT 0,
       resolution TEXT)`;
-    await this.scheduleEvery(60, "tick");
+    // scheduleEvery treats a new interval as a new schedule, so drop any
+    // tick left over from an earlier interval before (re)creating this one
+    for (const s of await this.listSchedules()) {
+      if (
+        s.callback === "tick" &&
+        s.type === "interval" &&
+        s.intervalSeconds !== TICK_SECONDS
+      ) {
+        await this.cancelSchedule(s.id);
+      }
+    }
+    await this.scheduleEvery(TICK_SECONDS, "tick");
   }
 
   // Only the server writes state; browsers just read it.
